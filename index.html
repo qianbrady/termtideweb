@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TermTide Web — paste numbers, get a gradient SVG chart</title>
+<meta name="description" content="Free offline SVG chart generator: paste JSON or CSV numbers and get gradient sparklines, heatmaps and bar charts you can download. Deterministic output ported from termtide.">
+<style>
+:root{--bg:#0b0f1a;--card:#141a2a;--border:#2a3350;--fg:#e8ecf5;--muted:#9fb0c8;--accent:#ff9933}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;line-height:1.5;padding:22px}
+.wrap{max-width:1020px;margin:0 auto}
+h1{font-size:25px}h1 .c{color:var(--accent)}
+.tag{color:var(--muted);font-size:13.5px;margin-top:4px}
+label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:5px}
+textarea{width:100%;height:150px;background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:12px;font:12.5px/1.55 ui-monospace,Consolas,monospace;resize:vertical}
+.row{display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;align-items:flex-end}
+.row>div{display:flex;flex-direction:column}
+select,input{background:var(--card);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:8px 10px;font-size:13px}
+.btnrow{display:flex;gap:10px;margin-top:14px}
+button.primary{background:#d27200;color:#fff;border:none;border-radius:6px;padding:10px 20px;font-weight:600;cursor:pointer;font-size:14px}
+button.ghost{background:transparent;color:var(--accent);border:1px solid var(--border);border-radius:6px;padding:9px 14px;cursor:pointer;font-size:13px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-top:16px;padding:16px}
+.hidden{display:none}
+pre{padding:12px;background:#080c16;border:1px solid var(--border);border-radius:6px;overflow:auto;font:11.5px/1.5 ui-monospace,Consolas,monospace;max-height:220px;white-space:pre-wrap;margin-top:10px}
+#preview svg{max-width:100%;height:auto;display:block;border-radius:6px}
+footer{margin-top:18px;color:var(--muted);font-size:12px;text-align:center}
+footer a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>TermTide <span class="c">Web</span></h1>
+<div class="tag">Paste numbers (JSON array or CSV) → deterministic gradient SVG charts: sparkline · heatmap · bars. Byte-faithful port of <a href="https://github.com/qianbrady/termtide" style="color:var(--accent)">termtide</a>'s SVG engine. Offline.</div>
+
+<label style="margin-top:16px">Data — JSON array [1,2,3] or CSV numbers</label>
+<textarea id="data" placeholder="[3, 7, 4, 9, 6, 12, 8]&#10;&#10;or CSV:&#10;3&#10;7&#10;4"></textarea>
+
+<div class="row">
+  <div><label>Chart type</label>
+    <select id="chart"><option value="spark">Sparkline</option><option value="heat">Heatmap</option><option value="bars">Bars</option></select></div>
+  <div><label>Theme</label>
+    <select id="theme"><option value="neon">neon 粉→橙→青</option><option value="ocean">ocean 深蓝→浅青</option><option value="mono">mono 灰阶</option></select></div>
+  <div><label>Title</label><input id="title" value="termtide" size="14"></div>
+  <div><label>Width</label><input id="w" type="number" value="800" min="200" max="2000" style="width:90px"></div>
+  <div><label>Height</label><input id="h" type="number" placeholder="auto" style="width:90px"></div>
+</div>
+
+<div class="btnrow">
+  <button class="primary" onclick="run()">Render SVG</button>
+  <button class="ghost" onclick="loadExample()">Load example</button>
+  <button class="ghost" onclick="downloadSvg()">Download .svg</button>
+  <button class="ghost" onclick="copySvg()">Copy SVG source</button>
+</div>
+
+<div class="card hidden" id="outCard">
+  <label>Preview</label>
+  <div id="preview"></div>
+  <label style="margin-top:12px">SVG source</label>
+  <pre id="src"></pre>
+</div>
+
+<footer>Same THEMES, gradient interpolation and printf-style formatting as termtide v0.1.x — outputs are byte-comparable. © 2025 MIT</footer>
+</div>
+
+<script>
+"use strict";
+/* ---- ported from termtide/theme.py ---- */
+const THEMES={
+ neon:[[255,0,102],[255,153,0],[0,255,204]],
+ ocean:[[4,51,102],[0,153,204],[122,219,255]],
+ mono:[[70,70,70],[255,255,255]]};
+function gradient(t,theme){
+  const stops=THEMES[theme]||THEMES.neon;
+  t=Math.max(0,Math.min(1,t));
+  if(t<=0)return stops[0];
+  if(t>=1)return stops[stops.length-1];
+  const seg=stops.length-1;
+  const scaled=t*seg;
+  const idx=Math.min(Math.trunc(scaled),seg-1);
+  const local=scaled-idx;
+  const [r0,g0,b0]=stops[idx],[r1,g1,b1]=stops[idx+1];
+  return [Math.round(r0+(r1-r0)*local),Math.round(g0+(g1-g0)*local),Math.round(b0+(b1-b0)*local)];}
+function normalize(v,vmin,span){
+  if(span===0)return 0.5;
+  const t=(v-vmin)/span;
+  if(!isFinite(t))return 0.5;
+  return Math.max(0,Math.min(1,t));}
+function rgbToHex(rgb){return "#"+rgb.map(c=>c.toString(16).padStart(2,"0")).join("");}
+
+/* ---- printf-style formatters (match C semantics used by Python %) ---- */
+function fx(x,n){let s=(Math.abs(x)<1e-12?0:x).toFixed(n);if(Object.is(Number(s),-0))s=(-Number(s)).toFixed(n);return s;}
+function gfmt(x){
+  if(!isFinite(x))return String(x);
+  if(Number.isInteger(x)&&Math.abs(x)<1e15)return String(x);
+  let s=x.toPrecision(6);
+  if(s.includes("e")||s.includes("E")){
+    const m=Number(s);
+    const exp=Math.floor(Math.log10(Math.abs(m)||1));
+    if(exp>=-4&&exp<6){s=m.toFixed(Math.max(0,5-exp));}
+    else{
+      let [mant,ex]=s.split(/[eE]/);
+      if(mant.includes("."))mant=mant.replace(/\.?0+$/,"");
+      const sign=ex.startsWith("-")?"-":"+"+"" ;
+      const digits=ex.replace(/^[+-]/,"").padStart(2,"0");
+      return mant+"e"+sign+""+digits;
+    }
+  }
+  if(s.includes("."))s=s.replace(/\.?0+$/,"");
+  return s;}
+
+/* ---- ported from termtide/svg.py ---- */
+const _BG="#0b0f1a",_FG="#e8ecf5",_LABEL="#9fb0c8";
+function esc(t){return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&apos;");}
+function defs(theme){
+  const stops=THEMES[theme]||THEMES.neon;
+  const n=stops.length;
+  let parts=['<linearGradient id="grad" x1="0" y1="0" x2="1" y2="0">'];
+  stops.forEach((s,i)=>parts.push('<stop offset="'+fx(i/(n-1)*100,2)+'%" stop-color="'+rgbToHex(s)+'"/>'));
+  parts.push("</linearGradient>");
+  return parts.join("");}
+function wrap(inner,w,h,theme,title){
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'">'
+   +'<rect width="100%" height="100%" fill="'+_BG+'"/>'
+   +defs(theme)
+   +'<text x="'+fx(w/2,0)+'" y="26" text-anchor="middle" fill="'+_FG+'" font-family="monospace" font-size="16">'+esc(title)+'</text>'
+   +inner+"</svg>";}
+function sparklineSvg(values,theme,w,h,title){
+  w=w||800;h=h||240;
+  const vals=[...values];
+  if(!vals.length)return wrap("",w,h,theme,title);
+  const vmin=Math.min(...vals),vmax=Math.max(...vals),span=vmax-vmin;
+  const px=w-40,py=h-70;
+  const pts=[];
+  vals.forEach((v,i)=>{
+    const x=20+i/Math.max(1,vals.length-1)*px;
+    const y=30+(1-normalize(v,vmin,span))*py;
+    pts.push(fx(x,1)+","+fx(y,1));});
+  const poly=pts.join(" ");
+  const [lastX,lastY]=pts[pts.length-1].split(",");
+  const area='<path d="M'+poly+' L '+lastX+','+(30+py)+' L 20,'+(30+py)+' Z" fill="url(#grad)" opacity="0.22"/>';
+  const line='<path d="M'+poly+'" fill="none" stroke="url(#grad)" stroke-width="3" stroke-linejoin="round"/>';
+  const marker='<rect x="'+fx(+lastX-4.5,1)+'" y="'+fx(+lastY-4.5,1)+'" width="9" height="9" fill="#ffd166"/>';
+  return wrap(area+line+marker,w,h,theme,title);}
+function heatmapSvg(values,theme,w,h,title){
+  w=w||800;
+  const vals=[...values];
+  if(!vals.length)return wrap("",w,120,theme,title);
+  const vmin=Math.min(...vals),vmax=Math.max(...vals),span=vmax-vmin;
+  const cols=Math.min(vals.length,80);
+  const maxRows=200;
+  let total=vals.length;
+  let rows=Math.ceil(total/cols);
+  if(rows>maxRows){vals.length=cols*maxRows;rows=maxRows;}
+  const cw=w/cols,ch=34,top=42;
+  const rects=[];
+  vals.forEach((v,i)=>{
+    const x=(i%cols)*cw,y=top+Math.floor(i/cols)*ch;
+    const fill=rgbToHex(gradient(normalize(v,vmin,span),theme));
+    rects.push('<rect x="'+fx(x,1)+'" y="'+fx(y,1)+'" width="'+fx(cw+0.4,1)+'" height="'+fx(ch-2,1)+'" fill="'+fill+'"/>');});
+  if(total>vals.length)
+    rects.push('<text x="8" y="'+(top+rows*ch+2)+'" fill="#999999" font-family="monospace" font-size="13">… 仅渲染前 '+vals.length+' / '+total+' 个数据点</text>');
+  const outH=top+rows*ch+(total>vals.length?28:10);
+  return wrap(rects.join(""),w,outH,theme,title);}
+function barsSvg(values,theme,w,h,title){
+  w=w||800;
+  const vals=[...values];
+  if(!vals.length)return wrap("",w,120,theme,title);
+  const vmin=Math.min(...vals),vmax=Math.max(...vals),span=vmax-vmin;
+  const bw=38,gap=9,top=44,bhMax=300;
+  let n=vals.length;
+  const maxBars=500;let truncated=false;
+  if(n>maxBars){vals.length=maxBars;n=maxBars;truncated=true;}
+  const outH=h||(top+n*(bw+gap)+(truncated?30:24));
+  const x0=w-320;
+  const parts=[];
+  vals.forEach((v,i)=>{
+    const y=top+i*(bw+gap);
+    let t,ln;
+    if(span===0){t=1.0;ln=bhMax;}else{t=normalize(v,vmin,span);ln=Math.max(3.0,t*bhMax);}
+    const fill=rgbToHex(gradient(t,theme));
+    parts.push('<rect x="'+x0+'" y="'+fx(y,1)+'" width="'+fx(ln,1)+'" height="'+bw+'" rx="4" fill="'+fill+'"/>');
+    parts.push('<text x="'+(x0+Math.trunc(ln)+10)+'" y="'+fx(y+bw-10,1)+'" fill="'+_LABEL+'" font-family="monospace" font-size="13">'+i+' '+gfmt(v)+'</text>');});
+  return wrap(parts.join(""),w,outH,theme,title);}
+
+/* ---- input parsing (subset of termtide/data.py) ---- */
+function parseNumbers(text){
+  const s=text.trim();if(!s)return [];
+  try{const j=JSON.parse(s);
+    if(Array.isArray(j)&&j.every(x=>typeof x==="number"&&isFinite(x)))return j;}catch(e){}
+  const out=[];let ok=true;
+  for(const tok of s.split(/[\s,;]+/)){
+    if(!tok)continue;
+    const n=Number(tok);
+    if(isNaN(n)||!isFinite(n)){ok=false;break;}
+    out.push(n);}
+  return ok?out:[];}
+
+let LAST="";
+function run(){
+  const vals=parseNumbers(document.getElementById("data").value);
+  const card=document.getElementById("outCard");
+  if(!vals.length){card.classList.remove("hidden");document.getElementById("preview").innerHTML='<p style="color:var(--red)">No valid numbers found — paste a JSON array like [1,2,3] or one number per line.</p>';document.getElementById("src").textContent="";LAST="";return;}
+  const mode=document.getElementById("chart").value;
+  const theme=document.getElementById("theme").value;
+  const title=document.getElementById("title").value||"termtide";
+  const w=Math.max(200,Math.min(2000,+document.getElementById("w").value||800));
+  let h=+document.getElementById("h").value;h=h>0?h:undefined;
+  let svg;
+  if(mode==="spark")svg=sparklineSvg(vals,theme,w,h||240,title);
+  else if(mode==="heat")svg=heatmapSvg(vals,theme,w,title=title);
+  else svg=barsSvg(vals,theme,w,h,title);
+  LAST=svg;
+  card.classList.remove("hidden");
+  document.getElementById("preview").innerHTML=svg;
+  document.getElementById("src").textContent=svg;}
+function downloadSvg(){
+  if(!LAST)return;
+  const blob=new Blob([LAST],{type:"image/svg+xml"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="termtide.svg";a.click();
+  URL.revokeObjectURL(a.href);}
+function copySvg(){if(LAST)navigator.clipboard.writeText(LAST);}
+function loadExample(){
+  document.getElementById("data").value="[3, 7, 4, 9, 6, 12, 8, 5, 11, 2, 9, 13, 7]";
+  run();}
+</script>
+</body>
+</html>
