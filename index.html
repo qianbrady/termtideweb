@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TermTide Web — paste numbers, get a gradient SVG chart</title>
-<meta name="description" content="Free offline SVG chart generator: paste JSON or CSV numbers and get gradient sparklines, heatmaps and bar charts you can download. Deterministic output ported from termtide.">
+<meta property="og:title" content="TermTideWeb - gradient SVG sparkline, heatmap and bar charts from pasted numbers">
+<meta property="og:description" content="Free offline SVG chart generator: paste JSON or CSV numbers and get gradient sparklines, heatmaps and bar charts you can download. Deterministic output ported from termtide.">
 <style>
 :root{--bg:#0b0f1a;--card:#141a2a;--border:#2a3350;--fg:#e8ecf5;--muted:#9fb0c8;--accent:#ff9933}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -40,7 +41,7 @@ footer a{color:var(--accent)}
   <div><label>Chart type</label>
     <select id="chart"><option value="spark">Sparkline</option><option value="heat">Heatmap</option><option value="bars">Bars</option></select></div>
   <div><label>Theme</label>
-    <select id="theme"><option value="neon">neon 粉→橙→青</option><option value="ocean">ocean 深蓝→浅青</option><option value="mono">mono 灰阶</option></select></div>
+    <select id="theme"><option value="neon">neon — pink→orange→cyan</option><option value="ocean">ocean — deep blue→teal</option><option value="mono">mono — grayscale</option></select></div>
   <div><label>Title</label><input id="title" value="termtide" size="14"></div>
   <div><label>Width</label><input id="w" type="number" value="800" min="200" max="2000" style="width:90px"></div>
   <div><label>Height</label><input id="h" type="number" placeholder="auto" style="width:90px"></div>
@@ -49,8 +50,8 @@ footer a{color:var(--accent)}
 <div class="btnrow">
   <button class="primary" onclick="run()">Render SVG</button>
   <button class="ghost" onclick="loadExample()">Load example</button>
-  <button class="ghost" onclick="downloadSvg()">Download .svg</button>
-  <button class="ghost" onclick="copySvg()">Copy SVG source</button>
+  <button class="ghost" data-needs-render disabled onclick="downloadSvg()">Download .svg</button>
+  <button class="ghost" data-needs-render disabled id="copySvgBtn" onclick="copySvg()">Copy SVG source</button>
 </div>
 
 <div class="card hidden" id="outCard">
@@ -80,7 +81,7 @@ function gradient(t,theme){
   const idx=Math.min(Math.trunc(scaled),seg-1);
   const local=scaled-idx;
   const [r0,g0,b0]=stops[idx],[r1,g1,b1]=stops[idx+1];
-  return [Math.round(r0+(r1-r0)*local),Math.round(g0+(g1-g0)*local),Math.round(b0+(b1-b0)*local)];}
+  return [roundHE(r0+(r1-r0)*local),roundHE(g0+(g1-g0)*local),roundHE(b0+(b1-b0)*local)];}
 function normalize(v,vmin,span){
   if(span===0)return 0.5;
   const t=(v-vmin)/span;
@@ -88,8 +89,20 @@ function normalize(v,vmin,span){
   return Math.max(0,Math.min(1,t));}
 function rgbToHex(rgb){return "#"+rgb.map(c=>c.toString(16).padStart(2,"0")).join("");}
 
+/* Python-style half-to-even rounding (banker's rounding) for byte parity */
+function roundHE(x){
+  const f=Math.floor(x), diff=x-f;
+  if(diff>0.5)return f+1;
+  if(diff<0.5)return f;
+  return f%2===0?f:f+1;}
+function fxHE(x,n){
+  const p=Math.pow(10,n);
+  let y=roundHE((Math.abs(x)<1e-12?0:x)*p)/p;
+  let s=y.toFixed(n);
+  if(Object.is(Number(s),-0))s=(-Number(s)).toFixed(n);
+  return s;}
 /* ---- printf-style formatters (match C semantics used by Python %) ---- */
-function fx(x,n){let s=(Math.abs(x)<1e-12?0:x).toFixed(n);if(Object.is(Number(s),-0))s=(-Number(s)).toFixed(n);return s;}
+function fx(x,n){return fxHE(x,n);}
 function gfmt(x){
   if(!isFinite(x))return String(x);
   if(Number.isInteger(x)&&Math.abs(x)<1e15)return String(x);
@@ -208,9 +221,9 @@ function run(){
   let h=+document.getElementById("h").value;h=h>0?h:undefined;
   let svg;
   if(mode==="spark")svg=sparklineSvg(vals,theme,w,h||240,title);
-  else if(mode==="heat")svg=heatmapSvg(vals,theme,w,title=title);
+  else if(mode==="heat")svg=heatmapSvg(vals,theme,w,null,title);
   else svg=barsSvg(vals,theme,w,h,title);
-  LAST=svg;
+  LAST=svg;document.querySelectorAll("[data-needs-render]").forEach(b=>b.disabled=false);
   card.classList.remove("hidden");
   document.getElementById("preview").innerHTML=svg;
   document.getElementById("src").textContent=svg;}
@@ -219,7 +232,12 @@ function downloadSvg(){
   const blob=new Blob([LAST],{type:"image/svg+xml"});
   const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="termtide.svg";a.click();
   URL.revokeObjectURL(a.href);}
-function copySvg(){if(LAST)navigator.clipboard.writeText(LAST);}
+function copySvg(){
+  if(!LAST)return;
+  navigator.clipboard.writeText(LAST).then(()=>{
+    const b=document.getElementById("copySvgBtn");
+    if(b){const o=b.textContent;b.textContent="Copied ✓";setTimeout(()=>b.textContent=o,1500);}
+  }).catch(()=>{});}
 function loadExample(){
   document.getElementById("data").value="[3, 7, 4, 9, 6, 12, 8, 5, 11, 2, 9, 13, 7]";
   run();}
